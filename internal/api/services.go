@@ -9,6 +9,7 @@ import (
 	"github.com/wyw14/cry-103/internal/feed"
 	"github.com/wyw14/cry-103/internal/incident"
 	"github.com/wyw14/cry-103/internal/landing"
+	"github.com/wyw14/cry-103/internal/orchestration"
 	"github.com/wyw14/cry-103/internal/otdr"
 	"github.com/wyw14/cry-103/internal/platform"
 	"github.com/wyw14/cry-103/internal/repair"
@@ -31,6 +32,7 @@ type Services struct {
 	Topology            *topology.Registry
 	OTDR                *otdr.SessionService
 	Switchovers         *switchover.SessionService
+	Orchestrator        *orchestration.Service
 	Permits             *repair.PermitService
 	Receipts            *landing.ReceiptRegistry
 	Acceptance          *repair.AcceptanceService

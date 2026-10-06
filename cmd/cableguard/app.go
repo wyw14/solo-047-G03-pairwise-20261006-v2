@@ -9,6 +9,7 @@ import (
 	"github.com/wyw14/cry-103/internal/feed"
 	"github.com/wyw14/cry-103/internal/incident"
 	"github.com/wyw14/cry-103/internal/landing"
+	"github.com/wyw14/cry-103/internal/orchestration"
 	"github.com/wyw14/cry-103/internal/otdr"
 	"github.com/wyw14/cry-103/internal/platform"
 	"github.com/wyw14/cry-103/internal/repair"
@@ -69,6 +70,9 @@ func buildServices(cfg config) (*api.Services, error) {
 	activator := route.NewActivator(topologies)
 	switchovers := switchover.NewSessionService(drainer, activator, ids, now, 25*time.Millisecond)
 	restorer := switchover.NewRestorer(drainer, activator, topologies, ids, now)
+	orchestrator := orchestration.NewService(drainer, activator, topologies, ids, now, orchestration.Timeouts{
+		Drain: 25 * time.Millisecond, Connect: 10 * time.Millisecond, Verify: 5 * time.Millisecond,
+	})
 
 	receipts := landing.NewReceiptRegistry()
 	isolation := feed.NewIsolationService()
@@ -117,7 +121,7 @@ func buildServices(cfg config) (*api.Services, error) {
 		Clock: clock, IDs: ids, Journal: journal,
 		Spans: map[string]*span.Span{"S3": spanS3}, Routes: map[string]*route.Route{"R-S3": routeS3},
 		Repeaters: map[string]*repeater.Repeater{"R07": repeaterR07}, Topology: topologies,
-		OTDR: otdrService, Switchovers: switchovers, Permits: permits, Receipts: receipts,
+		OTDR: otdrService, Switchovers: switchovers, Orchestrator: orchestrator, Permits: permits, Receipts: receipts,
 		Acceptance: acceptance, Telemetry: ingestor, TelemetryRepository: telemetryRepository, Admission: admission,
 		Classifier: incident.NewClassifier(), Correlator: otdr.NewCorrelator(), Health: health, Station: station,
 		WetPlantTests: wetPlantTests, Ramps: ramps, Assets: assets,

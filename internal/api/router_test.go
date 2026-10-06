@@ -12,6 +12,7 @@ import (
 	"github.com/wyw14/cry-103/internal/feed"
 	"github.com/wyw14/cry-103/internal/incident"
 	"github.com/wyw14/cry-103/internal/landing"
+	"github.com/wyw14/cry-103/internal/orchestration"
 	"github.com/wyw14/cry-103/internal/otdr"
 	"github.com/wyw14/cry-103/internal/platform"
 	"github.com/wyw14/cry-103/internal/repair"
@@ -65,7 +66,9 @@ func testServer(t *testing.T) *Server {
 		Repeaters: map[string]*repeater.Repeater{"R07": repeaterAsset}, Topology: registry,
 		OTDR:        otdr.NewSessionService(registry, landing.NewScanner(registry, 0), ids, clock.Now),
 		Switchovers: switchover.NewSessionService(drainer, activator, ids, clock.Now, time.Second),
-		Permits:     permitService, Receipts: receipts, Acceptance: acceptance,
+		Orchestrator: orchestration.NewService(drainer, activator, registry, ids, clock.Now,
+			orchestration.Timeouts{Drain: time.Second, Connect: time.Second, Verify: time.Second}),
+		Permits: permitService, Receipts: receipts, Acceptance: acceptance,
 		Telemetry: telemetry.NewIngestor(repository, clock.Now, projector), TelemetryRepository: repository,
 		Admission: incident.NewAdmissionService(telemetry.NewMuteManager(clock.Now)),
 	}
@@ -106,5 +109,67 @@ func TestHealthAndScanHTTPFlow(t *testing.T) {
 	server.Handler().ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/system/status", nil))
 	if status.Code != http.StatusOK {
 		t.Fatalf("status code=%d body=%s", status.Code, status.Body.String())
+	}
+}
+
+func TestSwitchOperationHTTPFlow(t *testing.T) {
+	server := testServer(t)
+
+	start := httptest.NewRecorder()
+	server.Handler().ServeHTTP(start, httptest.NewRequest(http.MethodPost,
+		"/api/routes/R-S3/switch-operations", bytes.NewReader([]byte(`{"reason":"fiber cut"}`))))
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status=%d body=%s", start.Code, start.Body.String())
+	}
+	var operation orchestration.Snapshot
+	if err := json.Unmarshal(start.Body.Bytes(), &operation); err != nil {
+		t.Fatal(err)
+	}
+	if operation.State != orchestration.StateProtected {
+		t.Fatalf("state=%s, want %s", operation.State, orchestration.StateProtected)
+	}
+	if len(operation.Stages) != 3 {
+		t.Fatalf("stages=%d, want 3", len(operation.Stages))
+	}
+	for _, stage := range operation.Stages {
+		if stage.Facts == nil {
+			t.Fatalf("stage %s shows no device facts", stage.Name)
+		}
+		if stage.Facts.Topology.SpanID != "S3" || stage.Facts.Route.ID != "R-S3" {
+			t.Fatalf("stage %s facts=%+v", stage.Name, stage.Facts)
+		}
+	}
+
+	detail := httptest.NewRecorder()
+	server.Handler().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/switch-operations/"+operation.ID, nil))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+
+	resume := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resume, httptest.NewRequest(http.MethodPost,
+		"/api/switch-operations/"+operation.ID+"/resume", nil))
+	if resume.Code != http.StatusAccepted {
+		t.Fatalf("resume status=%d body=%s", resume.Code, resume.Body.String())
+	}
+	var restored orchestration.Snapshot
+	if err := json.Unmarshal(resume.Body.Bytes(), &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.State != orchestration.StateCompleted || len(restored.Stages) != 7 {
+		t.Fatalf("restored state=%s stages=%d", restored.State, len(restored.Stages))
+	}
+
+	list := httptest.NewRecorder()
+	server.Handler().ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/routes/R-S3/switch-operations", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
+	}
+
+	abort := httptest.NewRecorder()
+	server.Handler().ServeHTTP(abort, httptest.NewRequest(http.MethodPost,
+		"/api/switch-operations/"+operation.ID+"/abort", nil))
+	if abort.Code != http.StatusConflict {
+		t.Fatalf("abort on completed operation status=%d, want 409", abort.Code)
 	}
 }
