@@ -8,18 +8,20 @@ import (
 	"github.com/wyw14/cry-103/internal/route"
 	"github.com/wyw14/cry-103/internal/span"
 	"github.com/wyw14/cry-103/internal/store"
+	"github.com/wyw14/cry-103/internal/switchover"
 	"github.com/wyw14/cry-103/internal/topology"
 )
 
 type SystemStatus struct {
-	GeneratedAt time.Time           `json:"generated_at"`
-	Spans       []span.Snapshot     `json:"spans"`
-	Routes      []route.Snapshot    `json:"routes"`
-	Repeaters   []repeater.Snapshot `json:"repeaters"`
-	Topologies  []topology.Snapshot `json:"topologies"`
-	EventCount  int                 `json:"event_count"`
-	Integrity   []IntegrityFinding  `json:"integrity"`
-	Warnings    []string            `json:"warnings"`
+	GeneratedAt time.Time                 `json:"generated_at"`
+	Spans       []span.Snapshot           `json:"spans"`
+	Routes      []route.Snapshot          `json:"routes"`
+	Repeaters   []repeater.Snapshot       `json:"repeaters"`
+	Topologies  []topology.Snapshot       `json:"topologies"`
+	SwitchPlans []switchover.PlanSnapshot `json:"switch_plans"`
+	EventCount  int                       `json:"event_count"`
+	Integrity   []IntegrityFinding        `json:"integrity"`
+	Warnings    []string                  `json:"warnings"`
 }
 
 type EventPage struct {
@@ -65,6 +67,7 @@ func (s *Services) Status() (SystemStatus, error) {
 	for _, id := range repeaterIDs {
 		result.Repeaters = append(result.Repeaters, s.Repeaters[id].Snapshot())
 	}
+	result.SwitchPlans = s.switchPlanListLocked()
 	records, err := s.Journal.Records()
 	if err != nil {
 		return SystemStatus{}, err

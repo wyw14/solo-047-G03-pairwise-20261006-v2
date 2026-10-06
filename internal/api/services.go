@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ type Services struct {
 	Topology            *topology.Registry
 	OTDR                *otdr.SessionService
 	Switchovers         *switchover.SessionService
+	Orchestrator        *switchover.Orchestrator
 	Permits             *repair.PermitService
 	Receipts            *landing.ReceiptRegistry
 	Acceptance          *repair.AcceptanceService
@@ -48,6 +50,7 @@ type Services struct {
 	Actuator            *feed.Actuator
 	Tests               map[string]*repair.TestSession
 	Incidents           map[string]*incident.Incident
+	SwitchPlans         map[string]*switchover.Plan
 	mu                  sync.RWMutex
 }
 
@@ -106,6 +109,53 @@ func (s *Services) FinishWetPlantTest(id, action string) (repair.TestSnapshot, e
 		return s.WetPlantTests.Complete(session), nil
 	}
 	return s.WetPlantTests.Cancel(session), nil
+}
+
+func (s *Services) StartSwitchPlan(ctx context.Context, target *route.Route, reason string) switchover.PlanSnapshot {
+	plan := s.Orchestrator.Start(ctx, target, reason)
+	s.mu.Lock()
+	if s.SwitchPlans == nil {
+		s.SwitchPlans = make(map[string]*switchover.Plan)
+	}
+	s.SwitchPlans[plan.Snapshot().ID] = plan
+	s.mu.Unlock()
+	return plan.Snapshot()
+}
+
+func (s *Services) SwitchPlan(id string) (*switchover.Plan, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	plan := s.SwitchPlans[id]
+	if plan == nil {
+		return nil, fmt.Errorf("switch plan %s not found", id)
+	}
+	return plan, nil
+}
+
+func (s *Services) SwitchPlanList() []switchover.PlanSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.switchPlanListLocked()
+}
+
+// switchPlanListLocked must be called with s.mu held.
+func (s *Services) switchPlanListLocked() []switchover.PlanSnapshot {
+	plans := make([]*switchover.Plan, 0, len(s.SwitchPlans))
+	for _, plan := range s.SwitchPlans {
+		plans = append(plans, plan)
+	}
+	sort.Slice(plans, func(i, j int) bool {
+		left, right := plans[i].Snapshot(), plans[j].Snapshot()
+		if left.CreatedAt.Equal(right.CreatedAt) {
+			return left.ID < right.ID
+		}
+		return left.CreatedAt.Before(right.CreatedAt)
+	})
+	result := make([]switchover.PlanSnapshot, 0, len(plans))
+	for _, plan := range plans {
+		result = append(result, plan.Snapshot())
+	}
+	return result
 }
 
 func (s *Services) Incident(id, spanID string) *incident.Incident {

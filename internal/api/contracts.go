@@ -26,6 +26,10 @@ type SwitchoverRequest struct {
 	Reason string `json:"reason"`
 }
 
+type SwitchPlanRequest struct {
+	Reason string `json:"reason"`
+}
+
 type IsolationRequest struct {
 	CircuitID string `json:"circuit_id"`
 }

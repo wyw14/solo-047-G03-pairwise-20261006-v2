@@ -69,6 +69,7 @@ func buildServices(cfg config) (*api.Services, error) {
 	activator := route.NewActivator(topologies)
 	switchovers := switchover.NewSessionService(drainer, activator, ids, now, 25*time.Millisecond)
 	restorer := switchover.NewRestorer(drainer, activator, topologies, ids, now)
+	orchestrator := switchover.NewOrchestrator(drainer, activator, topologies, ids, now, 25*time.Millisecond)
 
 	receipts := landing.NewReceiptRegistry()
 	isolation := feed.NewIsolationService()
@@ -117,12 +118,13 @@ func buildServices(cfg config) (*api.Services, error) {
 		Clock: clock, IDs: ids, Journal: journal,
 		Spans: map[string]*span.Span{"S3": spanS3}, Routes: map[string]*route.Route{"R-S3": routeS3},
 		Repeaters: map[string]*repeater.Repeater{"R07": repeaterR07}, Topology: topologies,
-		OTDR: otdrService, Switchovers: switchovers, Permits: permits, Receipts: receipts,
+		OTDR: otdrService, Switchovers: switchovers, Orchestrator: orchestrator, Permits: permits, Receipts: receipts,
 		Acceptance: acceptance, Telemetry: ingestor, TelemetryRepository: telemetryRepository, Admission: admission,
 		Classifier: incident.NewClassifier(), Correlator: otdr.NewCorrelator(), Health: health, Station: station,
 		WetPlantTests: wetPlantTests, Ramps: ramps, Assets: assets,
 		RepeaterHealth: healthProjector, Actuator: actuator,
 		Tests: make(map[string]*repair.TestSession), Incidents: make(map[string]*incident.Incident),
+		SwitchPlans: make(map[string]*switchover.Plan),
 	}, nil
 }
 

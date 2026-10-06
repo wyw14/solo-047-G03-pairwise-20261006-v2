@@ -34,6 +34,23 @@ func (a *Activator) Protection(ctx context.Context, route *Route, at time.Time) 
 	return route.update(StateProtectionActive, topology.PathProtection, 1_000_000, at), nil
 }
 
+// ConnectProtection cross-connects the protection path assuming the primary
+// path has already been opened by the caller.
+func (a *Activator) ConnectProtection(ctx context.Context, route *Route, at time.Time) (Snapshot, error) {
+	select {
+	case <-ctx.Done():
+		return route.Snapshot(), fmt.Errorf("protection connect: %w", ctx.Err())
+	default:
+	}
+	if _, err := a.topology.Connect(route.Snapshot().SpanID, topology.PathProtection, at); err != nil {
+		return route.Snapshot(), err
+	}
+	if _, err := a.topology.Switch(route.Snapshot().SpanID, topology.PathProtection, at); err != nil {
+		return route.Snapshot(), err
+	}
+	return route.update(StateProtectionActive, topology.PathProtection, 1_000_000, at), nil
+}
+
 func (a *Activator) Primary(ctx context.Context, route *Route, at time.Time) (Snapshot, error) {
 	select {
 	case <-ctx.Done():

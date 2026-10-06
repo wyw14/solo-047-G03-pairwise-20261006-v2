@@ -63,11 +63,13 @@ func testServer(t *testing.T) *Server {
 		Clock: clock, IDs: ids, Journal: store.NewJournal(filepath.Join(t.TempDir(), "events.jsonl")),
 		Spans: map[string]*span.Span{"S3": target}, Routes: map[string]*route.Route{"R-S3": path},
 		Repeaters: map[string]*repeater.Repeater{"R07": repeaterAsset}, Topology: registry,
-		OTDR:        otdr.NewSessionService(registry, landing.NewScanner(registry, 0), ids, clock.Now),
-		Switchovers: switchover.NewSessionService(drainer, activator, ids, clock.Now, time.Second),
-		Permits:     permitService, Receipts: receipts, Acceptance: acceptance,
+		OTDR:         otdr.NewSessionService(registry, landing.NewScanner(registry, 0), ids, clock.Now),
+		Switchovers:  switchover.NewSessionService(drainer, activator, ids, clock.Now, time.Second),
+		Orchestrator: switchover.NewOrchestrator(drainer, activator, registry, ids, clock.Now, time.Second),
+		Permits:      permitService, Receipts: receipts, Acceptance: acceptance,
 		Telemetry: telemetry.NewIngestor(repository, clock.Now, projector), TelemetryRepository: repository,
-		Admission: incident.NewAdmissionService(telemetry.NewMuteManager(clock.Now)),
+		Admission:   incident.NewAdmissionService(telemetry.NewMuteManager(clock.Now)),
+		SwitchPlans: make(map[string]*switchover.Plan),
 	}
 	return NewServer(services)
 }
@@ -78,6 +80,95 @@ type fixedClock struct {
 
 func (c fixedClock) Now() time.Time {
 	return c.now
+}
+
+func TestSwitchPlanHTTPFlow(t *testing.T) {
+	server := testServer(t)
+
+	body, _ := json.Marshal(SwitchPlanRequest{Reason: "cable cut"})
+	start := httptest.NewRecorder()
+	server.Handler().ServeHTTP(start, httptest.NewRequest(http.MethodPost, "/api/routes/R-S3/switch-plans", bytes.NewReader(body)))
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start status=%d body=%s", start.Code, start.Body.String())
+	}
+	var plan switchover.PlanSnapshot
+	if err := json.Unmarshal(start.Body.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.State != switchover.PlanProtected {
+		t.Fatalf("plan state=%s body=%s", plan.State, start.Body.String())
+	}
+	if len(plan.Stages) != 8 {
+		t.Fatalf("expected 8 staged entries, got %d", len(plan.Stages))
+	}
+	for _, stage := range plan.Stages[:4] {
+		if stage.Facts == nil || stage.Facts.SpanID != "S3" {
+			t.Fatalf("stage %s missing device facts: %+v", stage.Name, stage)
+		}
+	}
+
+	detail := httptest.NewRecorder()
+	server.Handler().ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/switch-plans/"+plan.ID, nil))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail status=%d", detail.Code)
+	}
+
+	resume := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resume, httptest.NewRequest(http.MethodPost, "/api/switch-plans/"+plan.ID+"/resume", nil))
+	if resume.Code != http.StatusOK {
+		t.Fatalf("resume status=%d body=%s", resume.Code, resume.Body.String())
+	}
+	var restored switchover.PlanSnapshot
+	if err := json.Unmarshal(resume.Body.Bytes(), &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.State != switchover.PlanCompleted {
+		t.Fatalf("plan state=%s after resume", restored.State)
+	}
+
+	list := httptest.NewRecorder()
+	server.Handler().ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/switch-plans", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status=%d", list.Code)
+	}
+
+	status := httptest.NewRecorder()
+	server.Handler().ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/system/status", nil))
+	if status.Code != http.StatusOK {
+		t.Fatalf("status code=%d", status.Code)
+	}
+	var systemStatus SystemStatus
+	if err := json.Unmarshal(status.Body.Bytes(), &systemStatus); err != nil {
+		t.Fatal(err)
+	}
+	if len(systemStatus.SwitchPlans) != 1 {
+		t.Fatalf("status page shows %d switch plans, want 1", len(systemStatus.SwitchPlans))
+	}
+
+	second := httptest.NewRecorder()
+	server.Handler().ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/api/routes/R-S3/switch-plans", nil))
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("second start status=%d body=%s", second.Code, second.Body.String())
+	}
+	var secondPlan switchover.PlanSnapshot
+	if err := json.Unmarshal(second.Body.Bytes(), &secondPlan); err != nil {
+		t.Fatal(err)
+	}
+	terminate := httptest.NewRecorder()
+	server.Handler().ServeHTTP(terminate, httptest.NewRequest(http.MethodPost, "/api/switch-plans/"+secondPlan.ID+"/terminate", nil))
+	if terminate.Code != http.StatusOK {
+		t.Fatalf("terminate status=%d body=%s", terminate.Code, terminate.Body.String())
+	}
+	var terminated switchover.PlanSnapshot
+	if err := json.Unmarshal(terminate.Body.Bytes(), &terminated); err != nil {
+		t.Fatal(err)
+	}
+	if terminated.State != switchover.PlanTerminated {
+		t.Fatalf("plan state=%s after terminate", terminated.State)
+	}
+	if _, err := server.services.Route("R-S3"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestHealthAndScanHTTPFlow(t *testing.T) {
